@@ -112,8 +112,16 @@ public class BioVerify extends Applet implements ExtendedLength {
     // Stores super secret private data
     private byte[] superSecretPrivateData = null;
     
+    private byte[] secureDataSmall = null;
+    
+    private byte[] unsecureDataSmall = null;
+    
     // Size of the data stored in superSecretPrivateData
     private short superSecretPrivateDataLength = 0;
+    
+    private short secureDataSmallLength = 0;
+    
+    private short unsecureDataSmallLength = 0;
     
 	CVM cvm;
 
@@ -210,6 +218,22 @@ public class BioVerify extends Applet implements ExtendedLength {
             	apdu.setOutgoingAndSend((short) 0, (short) (sLength));
             }
             return;
+        }
+        
+        //-----------------------------------------------------------------------------------------------------
+        // Set Data Secure Command
+        case CommandIns.SET_DATA_SECURE:
+        {
+        	handleSetDataSecure(apdu, recvLen);
+        	return;
+        }
+        
+        //-----------------------------------------------------------------------------------------------------
+        // Get Data Secure Command
+        case CommandIns.GET_DATA_SECURE:
+        {
+        	handleGetDataSecure(apdu);
+        	return;
         }
         
         //-----------------------------------------------------------------------------------------------------
@@ -356,16 +380,16 @@ public class BioVerify extends Applet implements ExtendedLength {
 		}
 		
 		// throw an exception for unsupported APDU commands
-//		ISOException.throwIt(ISO7816.SW_INS_NOT_SUPPORTED);
+		ISOException.throwIt(ISO7816.SW_INS_NOT_SUPPORTED);
 		
-		byte INS = buf[ISO7816.OFFSET_INS];
-		byte isEqual = (byte) 0;
-		if (INS == CommandIns.INT_AUTH)
-			isEqual = 1;
-		buf[ISO7816.OFFSET_P1] = (byte) INS;
-		buf[ISO7816.OFFSET_P2] = CommandIns.INT_AUTH;
-		buf[ISO7816.OFFSET_LC] = isEqual;
-		apdu.setOutgoingAndSend((short) 0, (short) 5);
+//		byte INS = buf[ISO7816.OFFSET_INS];
+//		byte isEqual = (byte) 0;
+//		if (INS == CommandIns.INT_AUTH)
+//			isEqual = 1;
+//		buf[ISO7816.OFFSET_P1] = (byte) INS;
+//		buf[ISO7816.OFFSET_P2] = CommandIns.INT_AUTH;
+//		buf[ISO7816.OFFSET_LC] = isEqual;
+//		apdu.setOutgoingAndSend((short) 0, (short) 5);
     }
     
     
@@ -406,6 +430,98 @@ public class BioVerify extends Applet implements ExtendedLength {
     /**                                      APDU HANDLERS                                       **/
     /**********************************************************************************************/
 
+    private void handleSetDataSecure(APDU apdu, short recvLen)
+    {
+        byte[] buffer = apdu.getBuffer();
+        
+        byte verificationResult = validateFingerprint(buffer);
+                
+        // indicate if the CVM applet was blocked or unavailable
+        if (verificationResult == Constants.Bio.BIO_CVM_BLOCKED)
+        {
+        	buffer[0] = Constants.Bio.BIO_CVM_BLOCKED;
+        	apdu.setOutgoingAndSend((short) 0, (short) 1);
+        	return;
+        }
+        
+        if (verificationResult == Constants.Bio.BIO_CVM_UNAVAILABLE)
+        {
+        	buffer[0] = Constants.Bio.BIO_CVM_UNAVAILABLE;
+        	apdu.setOutgoingAndSend((short) 0, (short) 1);
+        	return;
+        }
+        
+        // if the fingerprint was not verified, indicate such
+        if (verificationResult != Constants.Bio.BIO_FINGERPRINT_VERIFIED)
+        {
+        	buffer[0] = verificationResult;
+        	apdu.setOutgoingAndSend((short) 0, (short) 1);
+        	return;
+        }
+        
+        // Retrieve the 1-byte Tag
+        short tag = buffer[ISO7816.OFFSET_P2];
+		short dataLen = 0;
+		short dataOffset = 0;
+        
+      	switch (tag)
+      	{
+      		case Data_Tag_Secure.SECURE_DATA_HUGE:        
+      			/*
+      			 * NOTE: Both the secure and unsecure huge data storage commands write to the same data store!
+      			 */
+      			
+      			dataLen = apdu.getIncomingLength();
+      			dataOffset = apdu.getOffsetCdata();
+
+      			if (dataLen > Constants.Lengths.STORED_DATA_HUGE_MAX_LENGTH) {
+      			   	ISOException.throwIt(ISO7816.SW_WRONG_LENGTH);
+      			}
+      			
+      	        if(superSecretPrivateData == null)
+      	        {
+      	        	superSecretPrivateData = new byte[Constants.Lengths.STORED_DATA_HUGE_MAX_LENGTH];
+      	        }
+      	        
+      			Util.arrayCopyNonAtomic(buffer, dataOffset, superSecretPrivateData, (short)0, recvLen);
+
+      			short totalRead = recvLen;
+      			while (totalRead < dataLen) {
+      				recvLen = apdu.receiveBytes((short)0);
+      				Util.arrayCopyNonAtomic(buffer, (short)0, superSecretPrivateData, totalRead, recvLen);
+      				totalRead += recvLen;
+      			}
+
+      			superSecretPrivateDataLength = totalRead;
+      			Util.setShort(buffer, (short) 0, (short) superSecretPrivateDataLength);
+      			apdu.setOutgoingAndSend((short) 0, (short) 2);
+      			break;
+      			
+      		case Data_Tag_Secure.SECURE_DATA_SMALL:
+      			dataLen = apdu.getIncomingLength();
+      			dataOffset = apdu.getOffsetCdata();
+
+      			if (dataLen > Constants.Lengths.STORED_DATA_SMALL_MAX_LENGTH) {
+      			   	ISOException.throwIt(ISO7816.SW_WRONG_LENGTH);
+      			}
+      			
+      	        if(secureDataSmall == null)
+      	        {
+      	        	secureDataSmall = new byte[Constants.Lengths.STORED_DATA_SMALL_MAX_LENGTH];
+      	        }
+      	        
+      			Util.arrayCopyNonAtomic(buffer, dataOffset, secureDataSmall, (short)0, dataLen);
+      			
+      			secureDataSmallLength = dataLen;
+      			Util.setShort(buffer, (short) 0, (short) secureDataSmallLength);
+      			apdu.setOutgoingAndSend((short) 0, (short) 2);
+      			break;
+      			
+      		default:
+      			ISOException.throwIt(ISO7816.SW_CONDITIONS_NOT_SATISFIED);
+      	}
+    }
+    
     /**
      *  Set Data Handler
      *  This function is in charge of handling the information asked from the ICC if
@@ -420,30 +536,69 @@ public class BioVerify extends Applet implements ExtendedLength {
      */
     private void handleSetData(APDU apdu, short recvLen)
     {
-        if(superSecretPrivateData == null)
-        {
-        	superSecretPrivateData = new byte[Constants.Lengths.STORED_DATA_MAX_LENGTH];
-        }
-        
         byte[] buffer = apdu.getBuffer();
 
+        // Retrieve the 2-byte Tag
+        short tag = Util.makeShort(buffer[ISO7816.OFFSET_P1], buffer[ISO7816.OFFSET_P2]);
+		short dataLen = 0;
+		short dataOffset = 0;
         
-        short dataLen = apdu.getIncomingLength();
-        short dataOffset = apdu.getOffsetCdata();
-        
-        Util.arrayCopyNonAtomic(buffer, dataOffset, superSecretPrivateData, (short)0, recvLen);
-        
-        short totalRead = recvLen;
-        while (totalRead < dataLen) {
-            recvLen = apdu.receiveBytes((short)0);
-            Util.arrayCopyNonAtomic(buffer, (short)0, superSecretPrivateData, totalRead, recvLen);
-            totalRead += recvLen;
-        }
-        
-        superSecretPrivateDataLength = totalRead;
-        Util.setShort(buffer, (short) 0, (short) superSecretPrivateDataLength);
-        apdu.setOutgoingAndSend((short) 0, (short) 2);
-        
+      	switch (tag)
+      	{
+      		case Data_Tag.APPLET_VERSION:
+      			ISOException.throwIt(ISO7816.SW_COMMAND_NOT_ALLOWED);
+      			break;
+      			
+      		case Data_Tag.STORED_DATA_SECURE:        
+      			dataLen = apdu.getIncomingLength();
+      			dataOffset = apdu.getOffsetCdata();
+
+      			if (dataLen > Constants.Lengths.STORED_DATA_HUGE_MAX_LENGTH) {
+      			   	ISOException.throwIt(ISO7816.SW_WRONG_LENGTH);
+      			}
+      			
+      	        if(superSecretPrivateData == null)
+      	        {
+      	        	superSecretPrivateData = new byte[Constants.Lengths.STORED_DATA_HUGE_MAX_LENGTH];
+      	        }
+      	        
+      			Util.arrayCopyNonAtomic(buffer, dataOffset, superSecretPrivateData, (short)0, recvLen);
+
+      			short totalRead = recvLen;
+      			while (totalRead < dataLen) {
+      				recvLen = apdu.receiveBytes((short)0);
+      				Util.arrayCopyNonAtomic(buffer, (short)0, superSecretPrivateData, totalRead, recvLen);
+      				totalRead += recvLen;
+      			}
+
+      			superSecretPrivateDataLength = totalRead;
+      			Util.setShort(buffer, (short) 0, (short) superSecretPrivateDataLength);
+      			apdu.setOutgoingAndSend((short) 0, (short) 2);
+      			break;
+      			
+      		case Data_Tag.UNSECURE_DATA_SMALL:
+      			dataLen = apdu.getIncomingLength();
+      			dataOffset = apdu.getOffsetCdata();
+
+      			if (dataLen > Constants.Lengths.STORED_DATA_SMALL_MAX_LENGTH) {
+      			   	ISOException.throwIt(ISO7816.SW_WRONG_LENGTH);
+      			}
+      			
+      	        if(unsecureDataSmall == null)
+      	        {
+      	        	unsecureDataSmall = new byte[Constants.Lengths.STORED_DATA_SMALL_MAX_LENGTH];
+      	        }
+      	        
+      			Util.arrayCopyNonAtomic(buffer, dataOffset, unsecureDataSmall, (short)0, dataLen);
+      			
+      			unsecureDataSmallLength = dataLen;
+      			Util.setShort(buffer, (short) 0, (short) unsecureDataSmallLength);
+      			apdu.setOutgoingAndSend((short) 0, (short) 2);
+      			break;
+      			
+      		default:
+      			ISOException.throwIt(ISO7816.SW_CONDITIONS_NOT_SATISFIED);
+      	}
         
         
 //        superSecretPrivateDataLength = apdu.getIncomingLength();
@@ -568,35 +723,158 @@ public class BioVerify extends Applet implements ExtendedLength {
 
     //*************************************************************************************************
     
+    private void handleGetDataSecure(APDU apdu)
+    {
+        byte[] buffer = apdu.getBuffer();
+        
+        byte verificationResult = validateFingerprint(buffer);
+                
+        // indicate if the CVM applet was blocked or unavailable
+        if (verificationResult == Constants.Bio.BIO_CVM_BLOCKED)
+        {
+        	buffer[0] = Constants.Bio.BIO_CVM_BLOCKED;
+        	apdu.setOutgoingAndSend((short) 0, (short) 1);
+        	return;
+        }
+        
+        if (verificationResult == Constants.Bio.BIO_CVM_UNAVAILABLE)
+        {
+        	buffer[0] = Constants.Bio.BIO_CVM_UNAVAILABLE;
+        	apdu.setOutgoingAndSend((short) 0, (short) 1);
+        	return;
+        }
+        
+        // if the fingerprint was not verified, indicate such
+        if (verificationResult != Constants.Bio.BIO_FINGERPRINT_VERIFIED)
+        {
+        	buffer[0] = verificationResult;
+        	apdu.setOutgoingAndSend((short) 0, (short) 1);
+        	return;
+        }
+        
+        // Retrieve the 1-byte Tag
+        short tag = buffer[ISO7816.OFFSET_P2];
+		short toSend = 0;
+		short maxLen = 0;
+        
+      	switch (tag)
+      	{
+		case Data_Tag_Secure.SECURE_DATA_HUGE:
+			
+			toSend = superSecretPrivateDataLength;
+			
+			if (toSend == 0) {
+				apdu.setOutgoingAndSend((short)0, (short)0);
+				return;
+			}
+			
+			maxLen = apdu.setOutgoing();
+			
+			if (superSecretPrivateDataLength < maxLen) {
+				maxLen = superSecretPrivateDataLength;
+			}
+
+			apdu.setOutgoingLength(maxLen);
+			
+			short outgoingOffset = 0;
+			short amountSent = maxLen;
+			
+			while (toSend > 0) {
+				if (toSend < maxLen) {
+					amountSent = toSend;
+				}
+				
+				//apdu.sendBytesLong(superSecretPrivateData, outgoingOffset, amountSent);
+				
+  			  //Util.setShort(buffer, (short) 0, amountSent);
+  			  //Util.setShort(buffer, (short) 2, (short) toSend);
+  			  //apdu.sendBytes ( (short)0 , (short)4 );
+  			  
+				apdu.sendBytesLong(superSecretPrivateData, outgoingOffset, (short) maxLen);
+
+				toSend -= amountSent;
+				outgoingOffset += amountSent;    						
+			}
+			
+			
+			
+			
+//			short le = apdu.setOutgoing();
+//			  //if (le < (short)2) ISOException.throwIt( ISO7816.SW_WRONG_LENGTH );
+//			  apdu.setOutgoingLength( (short)4 );
+//			 
+//			  // build response data in apdu.buffer[ 0.. outCount-1 ];
+//			  //buffer[0] = (byte)1; buffer[1] = (byte)2; buffer[2] = (byte)3; buffer[3] = (byte)4;
+//			  Util.setShort(buffer, (short) 0, le);
+//			  Util.setShort(buffer, (short) 2, (short) superSecretPrivateDataLength);
+//			  apdu.sendBytes ( (short)0 , (short)4 );
+			  
+			  
+//			short LE = apdu.setOutgoing();
+//			
+//			Util.setShort(buffer, (short) 0, LE);
+//			Util.setShort(buffer, (short) 2, (short) superSecretPrivateDataLength);
+//			//apdu.setOutgoingAndSend((short) 0, (short) 4);
+//			apdu.sendBytes((short)0, (short) 4);
+			
+////			buffer[ISO7816.OFFSET_P1] = (byte) 0x11;
+////			buffer[ISO7816.OFFSET_P2] = (byte) 0x22;
+////			buffer[ISO7816.OFFSET_LC] = (byte) 0x33;
+////			apdu.setOutgoingAndSend((short) 0, (short) 5);
+//
+//			//Util.setShort(buffer, (short) 0, toSend);
+//			//apdu.setOutgoingAndSend((short) 0, (short) 2);
+//			
+////			toSend += 2;
+//			apdu.setOutgoing();
+//			apdu.setOutgoingLength(superSecretPrivateDataLength);
+////			
+////			Util.setShort(buffer, (short) 0, (short) superSecretPrivateDataLength);
+////			apdu.sendBytes((short) 0, (short) 2);
+//			apdu.sendBytesLong(superSecretPrivateData, (short) 0, superSecretPrivateDataLength);
+
+			break;
+      			
+      		case Data_Tag_Secure.SECURE_DATA_SMALL:
+    			toSend = secureDataSmallLength;
+    			
+    			if (toSend == 0) {
+    				apdu.setOutgoingAndSend((short)0, (short)0);
+    				return;
+    			}
+
+    			maxLen = apdu.setOutgoing();
+    			
+    			if (secureDataSmallLength < maxLen) {
+    				maxLen = secureDataSmallLength;
+    			}
+
+    			apdu.setOutgoingLength(maxLen);
+    			apdu.sendBytesLong(secureDataSmall, (short) 0, (short) maxLen);
+
+      			break;
+      			
+      		default:
+      			ISOException.throwIt(ISO7816.SW_CONDITIONS_NOT_SATISFIED);
+      	}
+    }
+    
+    //*************************************************************************************************
+    
     private void handleGetData(APDU apdu) 				//byte[] _ba_apdu_buffer , short _s_offset , short _s_length) ISO7816.OFFSET_CDATA, buf[ISO7816.OFFSET_LC]
     {
     	byte[] buffer = apdu.getBuffer();
     	
-    //	short LE = apdu.setOutgoing();
-    	
-//		buffer[ISO7816.OFFSET_P1] = (byte) 0x11;
-//		buffer[ISO7816.OFFSET_P2] = (byte) 0x22;
-//		buffer[ISO7816.OFFSET_LC] = (byte) 0x33;
-//		apdu.setOutgoingAndSend((short) 0, (short) 5);
-//		return;
+    	// Retrieve the 2-byte Tag
+    	short tag = Util.makeShort(buffer[ISO7816.OFFSET_P1], buffer[ISO7816.OFFSET_P2]);
+		short toSend = 0;
+		short maxLen = 0;
 
-    
-      // Temporary Tag Storage
-      short tag = 0;
-   // Retrieve the 2-byte Tag
-      tag = Util.makeShort(buffer[ISO7816.OFFSET_P1], buffer[ISO7816.OFFSET_P2]);
-      
     	switch (tag)
     	{
     		case Data_Tag.APPLET_VERSION:
-
-//    			Util.setShort(buffer, apdu.getOffsetCdata(), Hardcoded.APPLET_VERSION);
-//    			buffer[ISO7816.OFFSET_LC] = (byte) 2;
-//    			apdu.setOutgoingAndSend((short) 0, (short) 7);
-
-    			Util.setShort(buffer, (short) 0, (short) 2);
-    			Util.setShort(buffer, (short) 2, Hardcoded.APPLET_VERSION);
-    			apdu.setOutgoingAndSend((short) 0, (short) 4);
+    			Util.setShort(buffer, (short) 0, Hardcoded.APPLET_VERSION);
+    			apdu.setOutgoingAndSend((short) 0, (short) 2);
     			
 //                if ((buffer[ISO7816.OFFSET_CLA]) == 0x04)
 //                {
@@ -611,79 +889,25 @@ public class BioVerify extends Applet implements ExtendedLength {
 //                }
 
     		break;
-    		
-    		case Data_Tag.STORED_DATA:
+    		    		
+    		case Data_Tag.UNSECURE_DATA_SMALL:
     			
-    			short toSend = superSecretPrivateDataLength;
-    			short maxLen = apdu.setOutgoing();
+    			toSend = unsecureDataSmallLength;
     			
-    			//maxLen = (short) 256;
-    			
-    			if (superSecretPrivateDataLength < maxLen) {
-    				maxLen = superSecretPrivateDataLength;
-    				apdu.setOutgoingLength(maxLen);
+    			if (toSend == 0) {
+    				apdu.setOutgoingAndSend((short)0, (short)0);
+    				return;
     			}
 
-    			apdu.setOutgoingLength( (short)superSecretPrivateDataLength );
+    			maxLen = apdu.setOutgoing();
     			
-    			short outgoingOffset = 0;
-    			short amountSent = maxLen;
-    			
-    			while (toSend > 0) {
-    				if (toSend < maxLen) {
-    					amountSent = toSend;
-    				}
-    				
-    				//apdu.sendBytesLong(superSecretPrivateData, outgoingOffset, amountSent);
-    				
-      			  //Util.setShort(buffer, (short) 0, amountSent);
-      			  //Util.setShort(buffer, (short) 2, (short) toSend);
-      			  //apdu.sendBytes ( (short)0 , (short)4 );
-      			  
-    				apdu.sendBytesLong(superSecretPrivateData, outgoingOffset, (short) maxLen);
-
-    				toSend -= amountSent;
-    				outgoingOffset += amountSent;    						
+    			if (unsecureDataSmallLength < maxLen) {
+    				maxLen = unsecureDataSmallLength;
     			}
-    			
-    			
-    			
-    			
-//    			short le = apdu.setOutgoing();
-//    			  //if (le < (short)2) ISOException.throwIt( ISO7816.SW_WRONG_LENGTH );
-//    			  apdu.setOutgoingLength( (short)4 );
-//    			 
-//    			  // build response data in apdu.buffer[ 0.. outCount-1 ];
-//    			  //buffer[0] = (byte)1; buffer[1] = (byte)2; buffer[2] = (byte)3; buffer[3] = (byte)4;
-//    			  Util.setShort(buffer, (short) 0, le);
-//    			  Util.setShort(buffer, (short) 2, (short) superSecretPrivateDataLength);
-//    			  apdu.sendBytes ( (short)0 , (short)4 );
-    			  
-    			  
-//    			short LE = apdu.setOutgoing();
-//    			
-//    			Util.setShort(buffer, (short) 0, LE);
-//    			Util.setShort(buffer, (short) 2, (short) superSecretPrivateDataLength);
-//    			//apdu.setOutgoingAndSend((short) 0, (short) 4);
-//    			apdu.sendBytes((short)0, (short) 4);
-    			
-////    			buffer[ISO7816.OFFSET_P1] = (byte) 0x11;
-////    			buffer[ISO7816.OFFSET_P2] = (byte) 0x22;
-////    			buffer[ISO7816.OFFSET_LC] = (byte) 0x33;
-////    			apdu.setOutgoingAndSend((short) 0, (short) 5);
-//  
-//    			//Util.setShort(buffer, (short) 0, toSend);
-//    			//apdu.setOutgoingAndSend((short) 0, (short) 2);
-//    			
-////    			toSend += 2;
-//    			apdu.setOutgoing();
-//    			apdu.setOutgoingLength(superSecretPrivateDataLength);
-////    			
-////    			Util.setShort(buffer, (short) 0, (short) superSecretPrivateDataLength);
-////    			apdu.sendBytes((short) 0, (short) 2);
-//    			apdu.sendBytesLong(superSecretPrivateData, (short) 0, superSecretPrivateDataLength);
 
-    		break;
+    			apdu.setOutgoingLength(maxLen);
+    			apdu.sendBytesLong(unsecureDataSmall, (short) 0, (short) maxLen);
+    		break;    			
     		
     		default:
     			ISOException.throwIt(ISO7816.SW_CONDITIONS_NOT_SATISFIED);
@@ -720,10 +944,6 @@ public class BioVerify extends Applet implements ExtendedLength {
 //            break;
 //            
 //            case Data_Tag.STORED_DATA:
-////            	_ba_apdu_buffer[_s_offset] = (byte)0x11;
-////            	_ba_apdu_buffer[(short) (_s_offset + 1)] = (byte)0x22;
-////            	_ba_apdu_buffer[(short) (_s_offset + 2)] = (byte)0x33;
-////            	_sReturnLength = (byte) 3;
 //
 //            	//_ba_apdu_buffer[_s_offset] = superSecretPrivateDataLength;
 //            	
@@ -744,23 +964,11 @@ public class BioVerify extends Applet implements ExtendedLength {
 //        return _sReturnLength;
     }
     
-  //*************************************************************************************************
-    
-    /**
-     *  Applet CVM function
-     *  this function processes the state of the biometrics and requests a fingerprint
-     *
-     * @param _ba_apdu_buffer Current APDU Buffer
-     * @param _s_offset APDU Data Offset
-     * @param _s_length APDU Data Length
-     * @throws
-     *
-     */
-    private short verifyFingerprint(byte[] ba_apdu_buffer, short s_offset)
+    private byte validateFingerprint(byte[] ba_apdu_buffer)
     {
         byte cvmIsAvailable = 0;
         byte cvmIsBlocked = 1;
-        byte verificationResult = 0;		// 0x7D indicates a match was never performed (i.e. an error occurred); 0 indicates CVM is blocked
+        byte verificationResult = 0;
         
         CVM_init(); // initialize CVM
         
@@ -788,41 +996,54 @@ public class BioVerify extends Applet implements ExtendedLength {
         				verificationResult = result;
                     
         				// note: the second byte returned is the try counter value
-                    
-                    //check the result
-               //     if (result == Bio.BIO_FAILED)
-              //      {
-               //     	fingerprintVerified = 0x10;			// fingerprint did not match
-             //       } 
-              //      else if (result == Bio.BIO_SUCCESSFUL)
-              //      {
-             //       	fingerprintVerified = 0x11;			// fingerprint is verified
-                    	
-                    	// TODO: Not sure if we need this
-//                        if (updateWSSMState(WSSM.PIN_AUTH) != Constants.Secure_Bool.TRUE)
-//                        {
-//                            Kill();
-//                        }
-                  //  }
         			}
         		}
         	}
         }
         
-        // TODO: This return data may change, unsure if all of this is necessary
-      //  //Util.setShort(ba_apdu_buffer, s_offset, (short) 0x5F3C); // Get_Data_A.TAG_CVM);
-        ba_apdu_buffer[s_offset] = (byte) 0x5F;
+        if (cvmIsBlocked == 1) 
+        {
+        	return Constants.Bio.BIO_CVM_BLOCKED;
+        }
+        
+        if (cvmIsAvailable == 0) 
+        {
+        	return Constants.Bio.BIO_CVM_UNAVAILABLE;
+        }
+        
+        return verificationResult;
+    }
+    
+    private short verifyFingerprint(byte[] apduBuffer, short s_offset)
+    {
+        byte verificationResult = validateFingerprint(apduBuffer);
+        
+        apduBuffer[s_offset] = (byte) 0x5F;
         s_offset++;
-        ba_apdu_buffer[s_offset] = (byte) 0x3C; 
+        apduBuffer[s_offset] = (byte) 0x3C; 
+        s_offset++;
+        apduBuffer[s_offset] = (byte) 0x02;
         s_offset++;
         
-        ba_apdu_buffer[s_offset] = (byte) 0x02;
+        byte cvmIsAvailable = 1;
+        byte cvmIsBlocked = 0;
+        
+        if (verificationResult == Constants.Bio.BIO_CVM_BLOCKED)
+        {
+        	cvmIsBlocked = 1;
+        }
+        
+        if (verificationResult == Constants.Bio.BIO_CVM_UNAVAILABLE)
+        {
+        	cvmIsAvailable = 0;
+        	verificationResult = 0;
+        }
+        
+        apduBuffer[s_offset] = (byte) cvmIsAvailable;
         s_offset++;
-        ba_apdu_buffer[s_offset] = (byte) cvmIsAvailable;
+        apduBuffer[s_offset] = (byte) verificationResult;
         s_offset++;
-        ba_apdu_buffer[s_offset] = (byte) verificationResult;
-        s_offset++;
-        ba_apdu_buffer[s_offset] = (byte) cvmIsBlocked;
+        apduBuffer[s_offset] = (byte) cvmIsBlocked;
         s_offset++;
 
 
@@ -839,6 +1060,93 @@ public class BioVerify extends Applet implements ExtendedLength {
         
         return s_offset;
     }
+    
+  //*************************************************************************************************
+    
+    /**
+     *  Applet CVM function
+     *  this function processes the state of the biometrics and requests a fingerprint
+     *
+     * @param _ba_apdu_buffer Current APDU Buffer
+     * @param _s_offset APDU Data Offset
+     * @param _s_length APDU Data Length
+     * @throws
+     *
+     */
+//    private short verifyFingerprint(byte[] ba_apdu_buffer, short s_offset)
+//    {
+//        byte cvmIsAvailable = 0;
+//        byte cvmIsBlocked = 1;
+//        byte verificationResult = 0;		// 0x7D indicates a match was never performed (i.e. an error occurred); 0 indicates CVM is blocked
+//        
+//        CVM_init(); // initialize CVM
+//        
+//        if (cvm != null)
+//        {
+//        	cvmIsAvailable = 1;
+//        	// see if we're blocked first
+//        	if (!cvm.isBlocked())
+//        	{
+//        		cvmIsBlocked = 0;
+//        		
+//        		// activate the CVM
+//        		short res = cvm.verify(null, (short) 0, (byte) 0, CVMMode.ACTIVATE);
+//        		if (res == (short) 0xA502)
+//        		{
+//        			// TODO: Why do we need the P1 parameter = 1?
+//        			if (ba_apdu_buffer[ISO7816.OFFSET_P1] == 0x01) // P1==1
+//        			{
+//        				// get the bio result
+//        				res = cvm.verify(null, (short) 0, (byte) 0, CVMMode.BIO_VERIFY);
+//        				cvm.resetState();
+//        				
+//        				//check the first byte of the result
+//        				byte result = (byte) ((short) (res >> (byte) 8) & ((short) 0xff));
+//        				verificationResult = result;
+//                    
+//        				// note: the second byte returned is the try counter value
+//                                        	
+//                    	// TODO: Not sure if we need this
+////                        if (updateWSSMState(WSSM.PIN_AUTH) != Constants.Secure_Bool.TRUE)
+////                        {
+////                            Kill();
+////                        }
+//                  //  }
+//        			}
+//        		}
+//        	}
+//        }
+//        
+//        // TODO: This return data may change, unsure if all of this is necessary
+//      //  //Util.setShort(ba_apdu_buffer, s_offset, (short) 0x5F3C); // Get_Data_A.TAG_CVM);
+//        ba_apdu_buffer[s_offset] = (byte) 0x5F;
+//        s_offset++;
+//        ba_apdu_buffer[s_offset] = (byte) 0x3C; 
+//        s_offset++;
+//        
+//        ba_apdu_buffer[s_offset] = (byte) 0x02;
+//        s_offset++;
+//        ba_apdu_buffer[s_offset] = (byte) cvmIsAvailable;
+//        s_offset++;
+//        ba_apdu_buffer[s_offset] = (byte) verificationResult;
+//        s_offset++;
+//        ba_apdu_buffer[s_offset] = (byte) cvmIsBlocked;
+//        s_offset++;
+//
+//
+//        // TODO: Unsure if this is needed
+//        // Set Tag for Authentication Status as a Sub Tag
+////        Util.setShort(ba_apdu_buffer, s_offset, Get_Data_A.TAG_WSSM);
+////        s_offset += (short) 2;
+////        ba_apdu_buffer[s_offset] = Utility.LENGTH_WALLET_AUTHENTICATION_STATUS;
+////        s_offset += (short) 1;
+//        
+//        // Set Authentication Status Data
+////        ba_apdu_buffer[s_offset] = getWSSM();
+////        s_offset += (short) 1;
+//        
+//        return s_offset;
+//    }
     //*************************************************************************************************
 
 }
